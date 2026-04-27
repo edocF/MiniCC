@@ -1,0 +1,6 @@
+.env
+.cursor
+.vscode
+/project
+__pycache__/
+docs/
