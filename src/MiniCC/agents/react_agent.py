@@ -7,6 +7,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from MiniCC.core.agent import Agent
+from MiniCC.core.hitl import get_global_approval_manager
 from MiniCC.core.logger import get_logger
 from MiniCC.messages import AIMessage, SystemMessage, ToolMessage
 from MiniCC.prompts import REACT_AGENT_SYSTEM_PROMPT
@@ -119,7 +120,18 @@ class ReActAgent(Agent):
         return self._execute_tool_with_args(tool_name, args)
 
     def _execute_tool_with_args(self, tool_name: str, args: dict[str, Any]) -> Any:
-        """已解析 args 后真正调用 Tool。失败时返回错误描述字符串。"""
+        """已解析 args 后真正调用 Tool。失败时返回错误描述字符串。
+
+        在真正执行前先过 HITL 审批层；若被用户拒绝，返回结构化的
+        ``[HITL Rejected] {reason}`` 字符串，作为 ToolMessage 回灌给 LLM。
+        """
+        approval_mgr = get_global_approval_manager()
+        if approval_mgr.requires_approval(tool_name, args):
+            decision = approval_mgr.request(tool_name, args)
+            if not decision.approved:
+                _log.warn(f"用户拒绝执行 {tool_name}: {decision.reason}")
+                return f"[HITL Rejected] {decision.reason}"
+
         try:
             tool = self.registry.get_tool(tool_name)
             return tool.execute(**args)
@@ -179,11 +191,8 @@ if __name__ == "__main__":
     register_tool(MockWeatherTool())
 
     agent = ReActAgent()
-    _demo_log.section("Demo · PlannerTool JSON Mode")
-    _demo_log.info("使用复杂提示触发 PlanMode -> 只读工具收集 -> Planner (JSON Mode) 生成计划")
     response = agent.run(
-        "在project目录下写一个贪吃蛇小游戏只用python语言本地库不用其他库，并写一个测试用例测试这个游戏"
+        "在project目录下写一个俄罗斯方块小游戏只用python自带库不用其他库，并写一个测试用例测试这个游戏"
     )
-    _demo_log.section("Demo · 最终结果")
     _demo_log.final_answer(response.content or "")
-    _demo_log.success("Demo 完成：请检查输出中 Planner 是否使用了 JSON Mode 并生成了结构化计划")
+
