@@ -29,6 +29,7 @@ MODE_TOOL_NAMES: dict[str, FrozenSet[str]] = {
         {
             "enter_plan_mode",
             "write_file",
+            "delete_file",
             "executor",
         }
     ),

@@ -34,9 +34,14 @@ class ExecutorTool(BaseTool):
     """
     name = "executor"
     description = (
-        "安全执行命令行（推荐使用 argv 列表）。支持 python, echo, dir 等诊断命令，"
-        "内置白名单、timeout、cwd限制。shell=False，符合主流CodeAgent和03-execution-engine.md设计。"
-        "PlanMode下用于验证计划，Active模式下用于执行测试/脚本。"
+        "运行可执行程序（subprocess, shell=False, 内置 timeout 与 cwd 限制）。\n"
+        "用途：仅用于执行 Python 脚本与构建/测试工具，例如：\n"
+        "  - python / python3 / python.exe  (运行脚本、单测、`python -c \"...\"`)\n"
+        "  - java / mvn(w) / gradle(w)      (Java 构建与运行)\n"
+        "白名单仅包含上述可执行文件，其他命令（ls / dir / cat / echo / grep 等）会被拒绝。\n"
+        "command 必须是 argv 列表（例如 [\"python\", \"-c\", \"print(1)\"]），不要传 shell 字符串。\n"
+        "注意：当 argv 中出现写/删类调用（open(...).write、os.remove、shutil.rmtree 等）时，"
+        "本工具会触发 HITL 人工确认；如需写文件请优先用 write_file 工具，删文件用 delete_file 工具。"
     )
     args_schema = ExecutorArgs
 

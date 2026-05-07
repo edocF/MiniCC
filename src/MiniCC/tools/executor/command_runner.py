@@ -15,29 +15,37 @@ from MiniCC.tools.executor.command_spec import CommandSpec, ExecutionResult
 class CommandRunner:
     """Safe command executor following execution engine design."""
 
-    # Allowed base commands (first element of argv). Matches doc whitelist.
+    # 仅保留真正能稳定执行的可执行文件。
+    # 文件系统类操作（ls/dir/cat/grep/echo）请使用专用 Tool：
+    # list_dir / read_file / glob / grep / write_file。
     ALLOWED_COMMANDS = {
         "python", "python3", "python.exe",
         "mvn", "mvnw", "mvnw.cmd",
         "gradle", "gradlew", "gradlew.bat",
-        "java", "echo", "dir", "ls", "cat"  # diagnostic helpers for this project
+        "java",
     }
 
     def __init__(self, workspace_root: str | None = None):
         self.workspace_root = Path(workspace_root or Path.cwd()).resolve()
 
-    def _is_safe_command(self, spec: CommandSpec) -> bool:
-        """Basic whitelist validation per 03-execution-engine.md."""
+    def _check_command(self, spec: CommandSpec) -> str | None:
+        """白名单校验。返回 None 表示通过，否则返回拒绝原因（用于 stderr）。
+
+        注意：因为底层使用 shell=False，参数中的 ';' '|' '>' 等字符没有 shell 语义，
+        所以这里不再做参数级字符黑名单（之前会把 `python -c "a;b"` 这种合法 Python
+        源码错误地拦下来）。
+        """
         if not spec.argv:
-            return False
+            return "Empty argv: 必须提供 argv 列表，例如 ['python', '-c', 'print(1)']"
         base_cmd = spec.argv[0].lower().split("\\")[-1].split("/")[-1]
         if base_cmd not in self.ALLOWED_COMMANDS:
-            return False
-        # Prevent dangerous patterns (no shell meta chars in args for first version)
-        for arg in spec.argv[1:]:
-            if any(danger in arg for danger in ["&&", "||", ";", ">", "<", "|", "&"]):
-                return False
-        return True
+            allowed = sorted(self.ALLOWED_COMMANDS)
+            return (
+                f"Command '{base_cmd}' 不在 executor 白名单内。"
+                f"executor 仅用于运行 {allowed} 等可执行文件。"
+                "若需要列目录/读文件/搜索，请改用 list_dir / read_file / glob / grep 工具。"
+            )
+        return None
 
     def _validate_cwd(self, cwd: str) -> Path:
         """Restrict cwd to within workspace root for security."""
@@ -49,12 +57,13 @@ class CommandRunner:
 
     def run(self, spec: CommandSpec) -> ExecutionResult:
         """Execute command safely and return structured result."""
-        if not self._is_safe_command(spec):
+        reject_reason = self._check_command(spec)
+        if reject_reason is not None:
             return ExecutionResult(
                 success=False,
                 exit_code=None,
                 stdout="",
-                stderr="Command not allowed by whitelist",
+                stderr=reject_reason,
                 timed_out=False,
                 duration_ms=0,
                 command=spec.argv,

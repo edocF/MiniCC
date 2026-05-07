@@ -4,10 +4,11 @@ for Plan mode. Follows the style of finish_tool.py and base_tool.py."""
 
 import os
 import re
+import shutil
 import glob as glob_module
 from pathlib import Path
 from typing import Any, List, Dict
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from MiniCC.core.logger import get_logger
 from MiniCC.tools.base_tool import BaseTool
@@ -99,16 +100,35 @@ class GlobTool(BaseTool):
 # ==================== Read File ====================
 class ReadFileArgs(BaseModel):
     path: str
-    offset: int = 1
-    limit: int = 100
+    start_line: int = Field(
+        1,
+        ge=1,
+        description="Start reading from this 1-based line number. Use this to continue reading later parts of large files.",
+    )
+    max_lines: int = Field(
+        100,
+        ge=1,
+        le=200,
+        description="Maximum number of lines to return. Output is always capped at 200 lines.",
+    )
 
 
 class ReadFileTool(BaseTool):
     name = "read_file"
-    description = "Read file content with optional line range (offset and limit). Useful for inspecting code without loading entire large files. Supports up to 200 lines by default."
+    description = (
+        "Read file content from a chosen starting line. Use start_line to read later parts "
+        "of large files and max_lines to control truncation. Output is always capped at 200 lines."
+    )
     args_schema = ReadFileArgs
 
-    def execute(self, path: str, offset: int = 1, limit: int = 100) -> str:
+    def execute(
+        self,
+        path: str,
+        start_line: int = 1,
+        max_lines: int = 100,
+        offset: int | None = None,
+        limit: int | None = None,
+    ) -> str:
         """Read specific lines from a file."""
         try:
             file_path = Path(path).resolve()
@@ -120,13 +140,26 @@ class ReadFileTool(BaseTool):
             with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
                 lines = f.readlines()
 
-            start = max(0, offset - 1)
-            end = min(len(lines), start + limit)
+            # Backward compatibility for older tool calls that used offset/limit.
+            if offset is not None:
+                start_line = offset
+            if limit is not None:
+                max_lines = limit
+
+            start_line = max(1, int(start_line))
+            max_lines = min(200, max(1, int(max_lines)))
+            start = min(len(lines), start_line - 1)
+            end = min(len(lines), start + max_lines)
             selected_lines = lines[start:end]
 
             content = "".join(selected_lines)
             header = f"--- File: {file_path} (lines {start+1}-{end}, total {len(lines)} lines) ---\n"
-            footer = f"\n--- End of file (showing {len(selected_lines)} lines) ---"
+            footer = f"\n--- End of file chunk (showing {len(selected_lines)} lines, max_lines={max_lines}) ---"
+            if end < len(lines):
+                footer += (
+                    f"\n--- More content available. Next read: "
+                    f"read_file(path={path!r}, start_line={end + 1}, max_lines={max_lines}) ---"
+                )
 
             return header + content + footer
         except UnicodeDecodeError:
@@ -197,28 +230,30 @@ class GrepTool(BaseTool):
             return f"Grep error: {str(e)}"
 
 
-# ==================== Write File (安全写入) ====================
+# ==================== Write File ====================
 class WriteFileArgs(BaseModel):
-    path: str
-    content: str
-    confirm: bool = True # 必须设为 True 才能实际写入，防止意外覆盖
-    append: bool = False   # 如果为 True，则追加内容而不是覆盖
+    path: str = Field(..., description="目标文件路径（相对或绝对）")
+    content: str = Field(..., description="要写入的完整内容")
+    append: bool = Field(False, description="True 表示追加；False 覆盖（默认）")
 
 
 class WriteFileTool(BaseTool):
     name = "write_file"
-    description = "安全写入文件或创建新文件。必须设置 confirm=true 才能执行写入操作（防止意外覆盖重要文件）。支持 append 模式。新文件创建时会自动创建父目录。content 参数必须是完整的有效字符串。推荐用于写入完整代码。"
+    description = (
+        "写入或创建文件。本工具的执行会触发 HITL 人工确认，用户会看到 unified diff 预览"
+        "并通过 y/n/a/A/d 选择是否放行；模型无需自行传 confirm 参数。"
+        "新文件会自动创建父目录；append=true 时为追加，否则覆盖。"
+    )
     args_schema = WriteFileArgs
 
-    def execute(self, path: str, content: str, confirm: bool = False, append: bool = False) -> str:
-        """安全写入文件。只有 confirm=True 时才实际执行写操作。"""
-        if not confirm:
-            return f"""[安全拦截] 写入操作已被阻止。
-文件路径: {path}
-要实际写入，请设置 confirm=true。
-当前模式: {'追加' if append else '覆盖'}
-建议: 仅在确认内容正确后使用 confirm=true。"""
-
+    def execute(
+        self,
+        path: str,
+        content: str,
+        append: bool = False,
+        **_legacy: Any,  # 兼容旧调用传入的 confirm 等字段，统一忽略
+    ) -> str:
+        """写入文件。审批由 HITL 层在调用前完成；这里专注 IO。"""
         try:
             file_path = Path(path).resolve()
             file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -229,13 +264,53 @@ class WriteFileTool(BaseTool):
 
             action = "追加" if append else "写入"
             size = len(content)
-            return f"""[成功] {action}完成
-文件: {file_path}
-大小: {size} 字符
-模式: {'追加' if append else '覆盖'}
-提示: 使用 read_file 工具可验证写入结果。"""
+            return (
+                f"[成功] {action}完成\n"
+                f"文件: {file_path}\n"
+                f"大小: {size} 字符\n"
+                f"模式: {'追加' if append else '覆盖'}\n"
+                f"提示: 使用 read_file 工具可验证写入结果。"
+            )
         except Exception as e:
             return f"WriteFile error: {str(e)}"
+
+
+# ==================== Delete File ====================
+class DeleteFileArgs(BaseModel):
+    path: str = Field(..., description="待删除的文件或目录路径")
+    recursive: bool = Field(
+        False,
+        description="删除目录时必须显式设为 true；删除单个文件时无需设置。",
+    )
+
+
+class DeleteFileTool(BaseTool):
+    name = "delete_file"
+    description = (
+        "删除文件或目录。本工具的执行会触发 HITL 人工确认（路径预览 + 内容前若干行）。"
+        "默认仅可删除单个文件；删除目录时必须显式传 recursive=true，否则会被拒绝。"
+        "目标不存在时返回错误。优先使用此工具而不是 executor 间接删除文件。"
+    )
+    args_schema = DeleteFileArgs
+
+    def execute(self, path: str, recursive: bool = False) -> str:
+        try:
+            target = Path(path).resolve()
+            if not target.exists():
+                return f"DeleteFile error: '{path}' 不存在"
+            if target.is_file():
+                target.unlink()
+                return f"[成功] 已删除文件: {target}"
+            if target.is_dir():
+                if not recursive:
+                    return (
+                        f"DeleteFile error: '{path}' 是目录，需要 recursive=true 才能删除"
+                    )
+                shutil.rmtree(target)
+                return f"[成功] 已递归删除目录: {target}"
+            return f"DeleteFile error: '{path}' 既不是文件也不是目录"
+        except Exception as e:
+            return f"DeleteFile error: {e}"
 
 
 # 模块加载时自动注册所有工具
@@ -244,5 +319,8 @@ register_tool(GlobTool())
 register_tool(ReadFileTool())
 register_tool(GrepTool())
 register_tool(WriteFileTool())
+register_tool(DeleteFileTool())
 
-_log.debug("Filesystem tools 注册完成: list_dir / glob / read_file / grep / write_file")
+_log.debug(
+    "Filesystem tools 注册完成: list_dir / glob / read_file / grep / write_file / delete_file"
+)
