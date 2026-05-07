@@ -9,8 +9,11 @@ from pathlib import Path
 from typing import Any, List, Dict
 from pydantic import BaseModel
 
+from MiniCC.core.logger import get_logger
 from MiniCC.tools.base_tool import BaseTool
 from MiniCC.tools.tool_registry import register_tool
+
+_log = get_logger("FsTools")
 
 
 # ==================== List Directory (LS) ====================
@@ -242,4 +245,4 @@ register_tool(ReadFileTool())
 register_tool(GrepTool())
 register_tool(WriteFileTool())
 
-print("Filesystem tools (list_dir, glob, read_file, grep, write_file) registered successfully.")
+_log.debug("Filesystem tools 注册完成: list_dir / glob / read_file / grep / write_file")

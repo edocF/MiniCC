@@ -4,7 +4,10 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from MiniCC.core.logger import get_logger
 from MiniCC.core.tool_policy import get_allowed_tool_names, normalize_mode
+
+_log = get_logger("StateManager")
 
 
 class AgentState(BaseModel):
@@ -24,8 +27,10 @@ class AgentStateManager:
     def set_mode(self, mode: str) -> None:
         """切换模式。支持 'active' 和 'plan'。"""
         mode = normalize_mode(mode)
+        old = self.state.mode
         self.state.mode = mode
-        print(f"[StateManager] Mode changed to: {mode}")
+        if old != mode:
+            _log.mode_change(old, mode)
 
     def get_mode(self) -> str:
         return self.state.mode

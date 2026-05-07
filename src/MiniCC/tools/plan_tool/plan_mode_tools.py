@@ -2,9 +2,12 @@
 These tools allow the Agent to switch between PlanMode (readonly) and execution mode.
 """
 from pydantic import BaseModel, Field
+from MiniCC.core.logger import get_logger
 from MiniCC.tools.base_tool import BaseTool
 from MiniCC.tools.tool_registry import register_tool
 from MiniCC.core.state_manager import get_global_state_manager
+
+_log = get_logger("PlanMode")
 
 
 class PlanModeArgs(BaseModel):
@@ -20,7 +23,7 @@ class EnterPlanModeTool(BaseTool):
         """进入 PlanMode。通过状态中心切换为 'plan' 模式。"""
         state_manager = get_global_state_manager()
         state_manager.set_mode("plan")
-        print(f"Entering PlanMode with reason: {reason}")
+        _log.info(f"进入 PlanMode  reason={reason}")
         return f"已进入 PlanMode (只读)。原因: {reason}。现在只能使用只读工具生成结构化计划。"
 
 
@@ -33,7 +36,7 @@ class ExitPlanModeTool(BaseTool):
         """退出 PlanMode。通过状态中心切换为 'active' 模式。"""
         state_manager = get_global_state_manager()
         state_manager.set_mode("active")
-        print(f"Exiting PlanMode with reason: {reason}")
+        _log.info(f"退出 PlanMode  reason={reason}")
         return f"已退出 PlanMode。原因: {reason}。现在将根据计划执行任务。"
 
 
