@@ -3,10 +3,13 @@ from pydantic import BaseModel, Field
 from typing import List, Dict
 from MiniCC.tools.base_tool import BaseTool
 from MiniCC.core.llm import LLM
+from MiniCC.core.logger import get_logger
 from MiniCC.prompts import PLANNER_SYSTEM_PROMPT, get_planner_user_prompt
 
 # 自动注册到全局 Registry
 from MiniCC.tools.tool_registry import register_tool
+
+_log = get_logger("PlannerTool")
 
 
 class PlannerArgs(BaseModel):
@@ -44,7 +47,8 @@ class PlannerTool(BaseTool):
         """使用 Qwen JSON Schema Mode 动态生成严格符合 StructuredPlan 的计划。
         context 来自前面只读工具收集的信息。"""
         context_summary = context[:1000] if context else "No additional context from readonly tools."
-        print(f"[PlannerTool] Context summary: {context_summary}")
+        _log.info(f"开始生成计划  goal={goal!r}")
+        _log.debug(f"context 预览: {context_summary}")
         # 使用 Pydantic 自动生成 JSON Schema
         schema = StructuredPlan.model_json_schema()
 
@@ -77,11 +81,11 @@ class PlannerTool(BaseTool):
             plan = StructuredPlan.model_validate_json(json_str)
             result = plan.model_dump()
 
-            print(f"[PlannerTool] Successfully generated JSON Schema validated plan for: {goal}")
+            _log.success(f"生成结构化计划成功  steps={plan.estimated_steps}")
             return result
-        
+
         except Exception as e:
-            print(f"[PlannerTool] JSON Schema validation failed: {e}. Using fallback template.")
+            _log.warn(f"JSON Schema 校验失败，使用 fallback 模板  err={e}")
             # Fallback to template when JSON Mode fails
             steps = [
                 PlanStep(id=1, action=f"Analyze goal: {goal}", tool_to_use="read", expected_output="Project structure and key files", acceptance_criteria="Identify main modules and entry points"),

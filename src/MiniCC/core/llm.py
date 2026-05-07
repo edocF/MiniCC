@@ -1,18 +1,21 @@
 """LLM类，封装了LLM的调用逻辑。"""
 from __future__ import annotations
 
-import logging
 import os
 from typing import TYPE_CHECKING, Any, Generator, Optional
 
 import openai
 from dotenv import load_dotenv
 
+from MiniCC.core.logger import get_logger
+
 if TYPE_CHECKING:
     from MiniCC.messages.ai_message import AIMessage
     from MiniCC.messages.user_message import UserMessage
 
 load_dotenv()
+
+_log = get_logger("LLM")
 
 
 class LLM:
@@ -30,7 +33,7 @@ class LLM:
             api_key=os.getenv("LLM_API_KEY"),
             base_url=os.getenv("LLM_BASE_URL"),
         )
-        logging.info(f"LLM initialized with model: {self.model_name}")
+        _log.info(f"LLM 初始化完成  model={self.model_name}")
 
     def think(self, user_message: "UserMessage") -> "AIMessage":
         response = self._client.chat.completions.create(
@@ -132,16 +135,17 @@ if __name__ == "__main__":
             city = kwargs.get("city", "unknown")
             return f"{city} is sunny"
 
+    _demo_log = get_logger("LLM.demo")
     llm = LLM()
     user_message = UserMessage("请使用工具查询北京天气")
 
-    # tool calling 示例
     tool_registry = ToolRegistry()
     tool_registry.register(MockWeatherTool())
     response = llm.think_with_tools([user_message], tool_registry)
     for tool_call in response.tool_calls:
         tool = tool_registry.get_tool(tool_call.function.name)
         import json
+
         args = json.loads(tool_call.function.arguments)
         tool_result = tool.execute(**args)
-        print(tool_result)
+        _demo_log.tool_result(tool_call.function.name, tool_result)
