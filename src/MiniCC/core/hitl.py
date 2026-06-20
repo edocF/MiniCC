@@ -3,6 +3,7 @@
 在 ReActAgent 的工具调用入口前提供一道集中式审批，拦截：
 
 - ``write_file``  ：一律审批
+- ``edit_file``   ：一律审批
 - ``delete_file`` ：一律审批
 - ``executor``    ：仅当 argv 中包含写/删类关键词时审批（启发式）
 
@@ -43,8 +44,10 @@ from MiniCC.core.logger import (
 _log = get_logger("HITL")
 
 
-# 受控工具集合（write_file/delete_file 一律审批；executor 走启发式）
-_GUARDED_TOOLS: frozenset[str] = frozenset({"write_file", "delete_file", "executor"})
+# 受控工具集合（write_file/edit_file/delete_file 一律审批；executor 走启发式）
+_GUARDED_TOOLS: frozenset[str] = frozenset(
+    {"write_file", "edit_file", "delete_file", "executor"}
+)
 
 # executor argv 中匹配到这些关键词时认为是破坏性操作
 _EXECUTOR_DESTRUCTIVE_KEYWORDS: tuple[str, ...] = (
@@ -67,6 +70,8 @@ _EXECUTOR_DESTRUCTIVE_KEYWORDS: tuple[str, ...] = (
 # diff/预览截断阈值
 _DIFF_DEFAULT_LINES = 60
 _DIFF_EXPAND_LINES = 500
+_WRITE_PREVIEW_MAX_CHARS = int(os.getenv("MINICC_HITL_PREVIEW_CHARS", "8000"))
+_WRITE_PREVIEW_EDGE_LINES = 30
 _DELETE_PREVIEW_LINES = 5
 _DELETE_EXPAND_LINES = 30
 _EXECUTOR_CODE_DEFAULT = 80
@@ -115,6 +120,82 @@ def _truncate_lines(text: str, max_lines: int) -> str:
     return head + f"\n{DIM}... 还有 {omitted} 行省略 (按 [d] 展开){RESET}"
 
 
+def _truncate_content_preview(content: str, expand: bool = False) -> str:
+    """超大 content 只展示首尾片段，避免终端被刷屏。"""
+    max_chars = _WRITE_PREVIEW_MAX_CHARS * 4 if expand else _WRITE_PREVIEW_MAX_CHARS
+    if len(content) <= max_chars:
+        return content
+    lines = content.splitlines()
+    if len(lines) <= _WRITE_PREVIEW_EDGE_LINES * 2:
+        half = max_chars // 2
+        return (
+            content[:half]
+            + f"\n{DIM}... 中间省略 {len(content) - max_chars} 字符 (共 {len(content)} 字符，按 [d] 展开) ...{RESET}\n"
+            + content[-half:]
+        )
+    head = "\n".join(lines[:_WRITE_PREVIEW_EDGE_LINES])
+    tail = "\n".join(lines[-_WRITE_PREVIEW_EDGE_LINES:])
+    omitted = len(lines) - _WRITE_PREVIEW_EDGE_LINES * 2
+    return (
+        head
+        + f"\n{DIM}... 中间省略 {omitted} 行 / {len(content)} 字符 (按 [d] 展开) ...{RESET}\n"
+        + tail
+    )
+
+
+def _render_edit_preview(args: dict[str, Any], expand: bool = False) -> str:
+    path_str = str(args.get("path", "<unknown>"))
+    edit_type = args.get("edit_type", "?")
+    try:
+        from MiniCC.tools.filesystem_tool.filesystem_tools import preview_edit
+
+        old_content, new_content = preview_edit(path_str, args)
+    except Exception as exc:  # noqa: BLE001 - preview only
+        return (
+            f"{BOLD}edit_file{RESET}  {YELLOW}预览失败{RESET}  "
+            f"{CYAN}{path_str}{RESET}\n{DIM}{exc}{RESET}"
+        )
+
+    target = Path(path_str)
+    try:
+        target_resolved = target.resolve()
+    except Exception:
+        target_resolved = target
+
+    head = (
+        f"{BOLD}edit_file{RESET}  {edit_type}  "
+        f"{CYAN}{target_resolved}{RESET}\n"
+        f"{DIM}old_size={len(old_content)}  new_size={len(new_content)} chars{RESET}"
+    )
+    if edit_type == "lines":
+        head += (
+            f"\n{DIM}lines {args.get('start_line')}-{args.get('end_line')}{RESET}"
+        )
+
+    max_lines = _DIFF_EXPAND_LINES if expand else _DIFF_DEFAULT_LINES
+    diff_iter = difflib.unified_diff(
+        old_content.splitlines(),
+        new_content.splitlines(),
+        fromfile=f"a/{target.name}",
+        tofile=f"b/{target.name}",
+        lineterm="",
+    )
+    diff_lines: list[str] = []
+    for ln in diff_iter:
+        if ln.startswith("+++") or ln.startswith("---"):
+            diff_lines.append(f"{DIM}{ln}{RESET}")
+        elif ln.startswith("+"):
+            diff_lines.append(f"{BRIGHT_GREEN}{ln}{RESET}")
+        elif ln.startswith("-"):
+            diff_lines.append(f"{RED}{ln}{RESET}")
+        elif ln.startswith("@@"):
+            diff_lines.append(f"{BRIGHT_MAGENTA}{ln}{RESET}")
+        else:
+            diff_lines.append(ln)
+    body = "\n".join(diff_lines) if diff_lines else f"{DIM}(无变化){RESET}"
+    return head + "\n" + _truncate_lines(body, max_lines)
+
+
 def _render_write_preview(args: dict[str, Any], expand: bool = False) -> str:
     path_str = str(args.get("path", "<unknown>"))
     new_content = args.get("content", "")
@@ -150,15 +231,19 @@ def _render_write_preview(args: dict[str, Any], expand: bool = False) -> str:
     )
 
     max_lines = _DIFF_EXPAND_LINES if expand else _DIFF_DEFAULT_LINES
+    preview_content = _truncate_content_preview(new_content, expand=expand)
 
     if not exists:
-        body_lines = [f"{BRIGHT_GREEN}+ {ln}{RESET}" for ln in new_content.splitlines()]
+        body_lines = [f"{BRIGHT_GREEN}+ {ln}{RESET}" for ln in preview_content.splitlines()]
         body = "\n".join(body_lines) if body_lines else f"{DIM}(空文件){RESET}"
         return head + "\n" + _truncate_lines(body, max_lines)
 
+    preview_target = (
+        (old_content + preview_content) if append and exists else preview_content
+    )
     diff_iter = difflib.unified_diff(
         old_content.splitlines(),
-        diff_target.splitlines(),
+        preview_target.splitlines(),
         fromfile=f"a/{target.name}",
         tofile=f"b/{target.name}",
         lineterm="",
@@ -325,7 +410,7 @@ class ApprovalManager:
 
     # ---- 内部 ----
     def _make_key(self, tool_name: str, args: dict[str, Any]) -> str:
-        if tool_name in {"write_file", "delete_file"}:
+        if tool_name in {"write_file", "edit_file", "delete_file"}:
             p = args.get("path")
             if not p:
                 return ""
@@ -345,6 +430,8 @@ class ApprovalManager:
     ) -> str:
         if tool_name == "write_file":
             return _render_write_preview(args, expand=expand)
+        if tool_name == "edit_file":
+            return _render_edit_preview(args, expand=expand)
         if tool_name == "delete_file":
             return _render_delete_preview(args, expand=expand)
         if tool_name == "executor":
